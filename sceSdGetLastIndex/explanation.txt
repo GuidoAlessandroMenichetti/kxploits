@@ -1,0 +1,32 @@
+See the full disasm sceGetLastIndex.s
+The most important parts you'd like to see are:
+
+0x858   s1 = a0;
+.. argument 0 is backuped in $s1
+.. *(argument0 + 36) should be already swapped to our custom value before the next instruction for it to work
+0x9EC   a3 = *(u32 *)(s1 + 36);
+.. a3 will take the new value of *(argument0 + 36)
+0xA4C   a1 = a3 + s1;
+.. a1 will now be a pointer to (argument0 + *(argument0 + 36))
+0xA58    v1 = -128;
+..
+0xA68   *(u8 *)(a1 + 20) = v1;
+.. 0x80 (-128) gets stored in (argument0 + *(argument0 + 36) + 20)
+
+
+There's a lot of extra code that doesn't affect the exploit but I wanted to keep it there.
+The fault here is they read the value again from the argument pointer, instead of backing up the first valid value for ctx.count as soon as it enters the function and passes the address checks.
+Doing some maths we can get to any address we want to write 0x80 there.
+
+Summary
+
+    Main thread sets ctx.count to a valid value (ctx.count = 16)
+    Thread2 is created.
+    Main thread calls sceSdGetLastIndex(&ctx, something, something2);
+    sceSdGetLastIndex() checks the addresses in the arguments and validates ctx->count.
+    Suddenly Thread2 interrupts the execution and swaps ctx.count to another value.
+    sceSdGetLastIndex() resumes then and stores 0x80 (byte) in the address (&ctx + ctx.count).
+
+Note that this is a try-fail case, that's why the function calls are inside loops in both main and qwikthread.
+
+This function is named sceChnnlsv_C4C494F8() in pspsdk btw.
