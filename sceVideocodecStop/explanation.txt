@@ -1,0 +1,11 @@
+So here I go with my second kxploit reverse.
+The kermit function that breaks the kernel is sceMeWrapper_driver_4D78330C but we have to access it using sceVideocodecStop()
+
+sceVideocodecStop() requires the values passed as argument0 to be valid. So it calls sub_00000C38() to make sure they dont stomp on any kernel address.
+
+You might wonder how do we get past that values check of sub_00000C38()?. Well this is possible because of race conditions.
+Basically we feed that sub with valid values, and when it succeeds (returns 0) we change the values using another thread that is being executed parallely.
+After that, sceMeWrapper_driver_4D78330C is called and it nops 8 contiguous bytes on any address.
+There are some conditions that you might want to check by reading the C code I wrote.
+
+This is a try and fail case, thats is why we have to swap between valid and the exploited values a lot of times until it succeeds and our kernel code is executed.
