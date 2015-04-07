@@ -1,0 +1,108 @@
+sceKernelDeleteThread() 3.50 kernel exploit
+
+--------------+--------------
+
+This kxploit relies in a combination of faults from different syscalls. Initally sceIoOpen() is used to copy data to kernel memory then
+sceKernelDeleteThread() is exploited to write to a custom address in kernel memory.
+
+People who have some knowledge about C standard libs might know how strncpy() works.
+But let's summarize it anyway:
+
+	char * strncpy(char * destination, const char * source, int n);
+	This function will copy bytes from source to destination until a null byte appears OR n bytes are copied.
+	The byte copying includes non-printable characters, any from 0x01 to 0xFF will get copied to the destination.
+	So we can copy a maximum of n bytes unless there is a null byte somewhere in our source mem block.
+
+sceIoOpen() calls strncpy() to copy the file path (first syscall arg) to a buffer located in kernel memory.
+The path gets copied to the buffer even before trying to open it and creating a descriptor, so invalid file paths get copied as well.
+This buffer is never emptied, so data will remain there until it's overwritten with a new path.
+
+By default the IO path buffer length is 1024 bytes long. So we can copy up to 1024 bytes of data to kernel memory as long as there are
+no null bytes in the data block. A full KB in kernel memory is a lot.
+
+For now we have a way to write to a static kernel memory space; sadly we can't use this to break the kernel as we are limited to only
+1024 bytes which are controlled by strncpy().
+
+Please refer to sceIoOpen.c | sceIoOpen.s
+
+--------------+--------------
+
+- About UID's
+
+Each UID has a control block (of course, stored in kernel memory) which contains info about the item such as the type, a reference
+to the uid itself, some addresses, etc.
+The cool thing here is we can calculate a UID control block address by doing some bit shifting and oring:
+	UID_CB_ADDRESS = ((UID >> 7) << 2) | 0x88000000
+We can do it the other way too, we could calculate a UID by having the control block address.
+
+Using sceIoOpen() we can store into the IO path buffer some data pretending it's a thread uid block (after all it's located in kernel memory), 
+but sadly we don't know where this buffer is located. So we need to find it somehow.
+
+--------------+--------------
+
+- Part 1: Finding our UID block address
+
+There are syscalls that receive uid's as arguments and return certain values when called (normally they succeed when a valid uid is given)
+For example, sceKernelSuspendThread(SceUID) will receive a UID and return a value >= 0 if it succeeds.
+Of course there are some checks in uid blocks we must know:
+	The uid block uid value is located at (block_address + 12).
+	The uid type is located at (block_address + 8) and HAS TO BE 0x88015630 for threads uids.
+	If a uid block doesn't have these correct values then it's not a valid uid block.
+	
+It's important that we loop through kernel memory until we find where our fake uid block is located.
+NOTE: If we don't update the uid value in uid block as we loop through kernel addresses we will never find our uid block as valid. 
+So it's necessary that we calculate the UID for the current kernel address and update the fake uid data then call sceIoOpen() to store it into 
+the path buffer.
+
+int findUID()
+{
+	unsigned fake_uid_block[512];
+	*(fake_uid_block + 8) = 0x88015630; //uid type
+	
+	for(unsigned k_address = 0x88000000; k_address < 0x88300000; k_address += 4)
+	{
+		//Calculate the correct UID for this address
+		SceUID uid = ((k_address >> 2) << 7) + 1
+
+		//update the fake uid block with the correct uid for this address
+		//..
+
+		//call sceIoOpen to copy the fake uid block to io path buffer, this might require a lot of sceIoOpen() calls due to the nature of
+		//strncpy() which stops at the first null byte, so addresses with null bytes might be a little tricky to copy.
+		sceIoOpen((char *) fake_uid_block, PSP_O_RDONLY, 0777);
+
+		//check if the uid is valid
+		if(sceKernelSuspendThread(uid) >= 0)
+			return uid;
+	};
+};
+
+--------------+--------------
+
+- Part 2: Setting up an exploitable UID block
+
+Once the UID block address is located, the next thing to do is setup the block to pass the checks inside sceKernelDeleteThread().
+int sceKernelDeleteThread(SceUID thid) checks:
+	- Argument is not null.
+	- SysMemForKernel_44BDF332() must return 0. This function checks:
+		. *(uid_block_address + 12) has the correct uid for uid_block_address.
+		. *(uid_block_address + 8) has the correct type, which is 0x88015630.
+	- *(uid_block_address + 22) & 0x10 has to be different than 0. This is a 16 bits value.
+	- *(uid_block_address + 0xB8) is != 0.
+	
+Once those checks are bypassed, the syscall stores some values:
+	*(uid_block_address + 0x3C) = 0;
+	*(*(uid_block_address + 0x30) + 4) = *(uid_block_address + 0x34);
+	*(*(uid_block_address + 0x34)) = *(uid_block_address + 0x30);
+
+We exploit the kernel using the last operation above.
+	
+Please refer to sceKernelDeleteThread.c | sceKernelDeleteThread.s
+
+--------------+--------------
+
+I'd like to congrat qwik for this exploit, it's pretty complex and even wicked. Also thank him for his patience and for helping me
+to understand some concepts involved here.
+
+kernel exploit by qwikrazor
+explanation and reverse by GUIDOBOT
